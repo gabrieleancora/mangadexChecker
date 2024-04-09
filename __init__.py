@@ -39,9 +39,22 @@ def pluginMain(parametersString : str, longReturnMessage : bool, lastRuntime : d
             else:
                 refreshReq = requests.post(f'{base_url}/auth/refresh', json={"token": refreshToken})
                 loginJson = refreshReq.json()
-                sessionToken = loginJson["token"]["session"]
-                refreshToken = loginJson["token"]["refresh"]
-                config['Mangadex']['REFRESH'] = refreshToken
+                if loginJson["result"] == "ok":
+                    sessionToken = loginJson["token"]["session"]
+                    refreshToken = loginJson["token"]["refresh"]
+                    config['Mangadex']['REFRESH'] = refreshToken
+                # If I get error 401 I can refresh the token from scratch and it should work.
+                elif loginJson["result"] == "error" and loginJson["errors"][0]["status"] == 401:
+                    MANGADEX_USERNAME = mangadexConfig['USERNAME']
+                    MANGADEX_PASSWORD = mangadexConfig['PASSWORD']
+                    loginReqNew = requests.post(f'{base_url}/auth/login', json={"username": MANGADEX_USERNAME, "password": MANGADEX_PASSWORD})
+                    loginJsonNew = loginReqNew.json()
+                    sessionToken = loginJsonNew["token"]["session"]
+                    refreshToken = loginJsonNew["token"]["refresh"]
+                    config['Mangadex']['REFRESH'] = refreshToken
+                else:
+                    returnMsg.append("Error while refreshing the token. Maybe mangadex is offline?")
+                    return returnMsg
 
             with open(mangadexConfigPath, 'w') as cfgWriter:
                 config.write(cfgWriter)
