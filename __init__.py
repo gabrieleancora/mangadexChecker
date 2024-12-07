@@ -1,4 +1,6 @@
 import datetime
+import json
+
 import requests
 import pathlib
 import os
@@ -14,34 +16,74 @@ def pluginMain(parametersString : str, longReturnMessage : bool, lastRuntime : d
     myPath = pathlib.Path(__file__).parent
     mangadexConfigPath = os.path.join(myPath, 'mangadexConfig.ini')
     base_url = 'https://api.mangadex.org'
+    auth_url = 'https://auth.mangadex.org'
 
     if os.path.isfile(mangadexConfigPath):
         try:
-            sessionToken = ''
+            # TODO: if username | Password is empty
+            #       Prova a leggere gli update della lista
+            #       Se da errore di auth, tira un errore all'utente (graceful)
+            #       se son compialti, invecce, vedi qua stotto...
+            #       Mantieni possibilità di controllare lista if lista privata!!
+
+            accessToken = ''
             config = configparser.ConfigParser(interpolation=None)
             config.read(mangadexConfigPath)
             mangadexConfig = config['Mangadex']
-            refreshToken = mangadexConfig.get('REFRESH', None)
             mdList = mangadexConfig.get('MDLIST', None)
+            refreshToken = mangadexConfig.get('REFRESH', None)
+
 
             # If more than 29 days or the refresh token value is empty, do a new login using username / psw and then
-            # saves the refresh token to the config file to avoid new logins. The session token will be used only for
+            # saves the refresh token to the config file to avoid new logins. The access token will be used only for
             # the current loop.
 
             if nowTime - lastRuntimeLinux > 2505600 or refreshToken is None or refreshToken == "":
                 MANGADEX_USERNAME = mangadexConfig['USERNAME']
                 MANGADEX_PASSWORD = mangadexConfig['PASSWORD']
-                loginReq = requests.post(f'{base_url}/auth/login', json={"username": MANGADEX_USERNAME, "password": MANGADEX_PASSWORD})
-                loginJson = loginReq.json()
-                sessionToken = loginJson["token"]["session"]
-                refreshToken = loginJson["token"]["refresh"]
-                config['Mangadex']['REFRESH'] = refreshToken
+                MANGADEX_CLIENT_ID = mangadexConfig['client_id']
+                MANGADEX_CLIENT_SECRET = mangadexConfig['client_secret']
+                if MANGADEX_CLIENT_SECRET is None or MANGADEX_PASSWORD is None or MANGADEX_CLIENT_ID is None or MANGADEX_CLIENT_SECRET is None:
+                    returnMsg.append("Error while authenticating: one or more login tokens are missing.")
+                    return returnMsg
+                requestData = {"grant_type": "password", "username": MANGADEX_USERNAME, "password": MANGADEX_PASSWORD, "client_id": MANGADEX_CLIENT_ID, "client_secret": MANGADEX_CLIENT_SECRET}
+                loginReq = requests.post(f'{auth_url}/realms/mangadex/protocol/openid-connect/token', data=requestData)
+                try:
+                    loginJson = loginReq.json()
+                    accessToken = loginJson["access_token"]
+                    refreshToken = loginJson["refresh_token"]
+                    config['Mangadex']['REFRESH'] = refreshToken
+                except json.decoder.JSONDecodeError:
+                    returnMsg.append("Error while refreshing the token. Maybe mangadex is offline?")
+                    return returnMsg
             else:
-                refreshReq = requests.post(f'{base_url}/auth/refresh', json={"token": refreshToken})
-                loginJson = refreshReq.json()
-                sessionToken = loginJson["token"]["session"]
-                refreshToken = loginJson["token"]["refresh"]
-                config['Mangadex']['REFRESH'] = refreshToken
+                MANGADEX_CLIENT_ID = mangadexConfig['client_id']
+                MANGADEX_CLIENT_SECRET = mangadexConfig['client_secret']
+                refreshData = {"grant_type": "refresh_token","refresh_token": refreshToken, "client_id": MANGADEX_CLIENT_ID, "client_secret": MANGADEX_CLIENT_SECRET}
+                refreshReq = requests.post(f'{auth_url}/realms/mangadex/protocol/openid-connect/token', data=refreshData)
+                try:
+                    loginJson = refreshReq.json()
+                    if refreshReq.status_code == 200:
+                        accessToken = loginJson["access_token"]
+                        refreshToken = loginJson["refresh_token"]
+                        config['Mangadex']['REFRESH'] = refreshToken
+                    elif refreshReq.status_code == 400:
+                        MANGADEX_USERNAME = mangadexConfig['USERNAME']
+                        MANGADEX_PASSWORD = mangadexConfig['PASSWORD']
+                        MANGADEX_CLIENT_ID = mangadexConfig['client_id']
+                        MANGADEX_CLIENT_SECRET = mangadexConfig['client_secret']
+                        requestData = {"grant_type": "password", "username": MANGADEX_USERNAME, "password": MANGADEX_PASSWORD, "client_id": MANGADEX_CLIENT_ID, "client_secret": MANGADEX_CLIENT_SECRET}
+                        loginReq = requests.post(f'{auth_url}/realms/mangadex/protocol/openid-connect/token', data=requestData)
+                        loginJson = loginReq.json()
+                        accessToken = loginJson["access_token"]
+                        refreshToken = loginJson["refresh_token"]
+                        config['Mangadex']['REFRESH'] = refreshToken
+                    else:
+                        returnMsg.append("Error while refreshing the token. Maybe mangadex is offline?")
+                        return returnMsg
+                except json.decoder.JSONDecodeError:
+                    returnMsg.append("Error while refreshing the token. Maybe mangadex is offline?")
+                    return returnMsg
 
             with open(mangadexConfigPath, 'w') as cfgWriter:
                 config.write(cfgWriter)
@@ -56,7 +98,7 @@ def pluginMain(parametersString : str, longReturnMessage : bool, lastRuntime : d
             else:
                 followedUrl = base_url + '/user/follows/manga/feed'
             # Get updates list
-            updateRequest = requests.get(followedUrl, headers={"Authorization": f"Bearer {sessionToken}"}, params=parametersList)
+            updateRequest = requests.get(followedUrl, headers={"Authorization": f"Bearer {accessToken}"}, params=parametersList)
             updatedMangaJson = updateRequest.json()
             if updatedMangaJson['result'] == 'ok':
                 for chapter in updatedMangaJson['data']:
